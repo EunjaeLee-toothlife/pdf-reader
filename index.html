@@ -215,7 +215,7 @@
     <div class="field">
       <label>문장 다듬기</label>
       <div class="row" style="justify-content:space-between">
-        <span style="font-size:14px">AI 문장 분할 <span style="color:var(--muted);font-size:12px">(실험적 · 최초 1회 ~215MB)</span></span>
+        <span style="font-size:14px">AI 문장 분할 <span style="color:var(--muted);font-size:12px">(실험적 · 최초 1회 ~428MB)</span></span>
         <label class="switch">
           <input type="checkbox" id="aiToggle" />
           <span class="slider"></span>
@@ -387,13 +387,14 @@
 
     // ---- AI 문장 분할 (wtpsplit sat-3l-sm int8 ONNX, opt-in) ----
     let useAI = localStorage.getItem("useAI") === "1";
-    const SAT_URL = "https://huggingface.co/ModelCloud/sat-3l-sm-int8-onnx/resolve/main/model.onnx";
+    // fp32 원본 (입력 int64 / 출력 float32) — fp16 IO의 Float16Array 호환 문제 회피
+    const SAT_URL = "https://huggingface.co/segment-any-text/sat-3l-sm/resolve/main/model.onnx";
     const aiState = { ready: false, promise: null, tok: null, sess: null, ort: null };
 
     async function fetchModelCached(url) {
       // 215MB 1회만 받고 Cache API에 보관
       try {
-        const cache = await caches.open("sat-model-v1");
+        const cache = await caches.open("sat-model-fp32-v1");
         let res = await cache.match(url);
         if (!res) {
           res = await fetch(url);
@@ -412,7 +413,7 @@
       if (aiState.ready) return;
       if (aiState.promise) return aiState.promise;
       aiState.promise = (async () => {
-        setStatus("AI 모델 로딩… 최초 1회 ~215MB", true);
+        setStatus("AI 모델 로딩… 최초 1회 ~428MB", true);
         const tfjs = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3");
         tfjs.env.allowLocalModels = false;
         aiState.tok = await tfjs.AutoTokenizer.from_pretrained("Xenova/xlm-roberta-base");
@@ -429,13 +430,6 @@
       })();
       try { await aiState.promise; }
       catch (e) { aiState.promise = null; throw e; } // 실패 시 재시도 가능
-    }
-
-    function halfToFloat(h) {
-      const s = (h & 0x8000) >> 15, e = (h & 0x7c00) >> 10, f = h & 0x03ff;
-      if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
-      if (e === 0x1f) return f ? NaN : (s ? -Infinity : Infinity);
-      return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
     }
 
     async function aiSegment(text, threshold = 0.25) {
@@ -455,20 +449,13 @@
         const n = seq.length;
         const feeds = {};
         const i64 = (arr) => new ort.Tensor("int64", BigInt64Array.from(arr, (x) => BigInt(x)), [1, n]);
-        // 이 fp16 모델은 attention_mask를 float16으로 받음.
-        // ort 최신판은 native Float16Array 요구, 구판은 Uint16Array(half 비트) 사용.
-        const f16 = (arr) => typeof Float16Array !== "undefined"
-          ? new ort.Tensor("float16", Float16Array.from(arr, (x) => x), [1, n])
-          : new ort.Tensor("float16", Uint16Array.from(arr, (x) => (x ? 0x3c00 : 0x0000)), [1, n]);
-        if (inNames.includes("input_ids")) feeds.input_ids = i64(seq);             // ids는 int64 (vocab>2048라 fp16 불가)
-        if (inNames.includes("attention_mask")) feeds.attention_mask = f16(seq.map(() => 1));
+        if (inNames.includes("input_ids")) feeds.input_ids = i64(seq);
+        if (inNames.includes("attention_mask")) feeds.attention_mask = i64(seq.map(() => 1));
         if (inNames.includes("token_type_ids")) feeds.token_type_ids = i64(seq.map(() => 0));
         const out = await sess.run(feeds);
-        const raw = out[outName].data; // [1, n, 1] → 길이 n (float16이면 Uint16Array)
-        const isF16 = raw instanceof Uint16Array;
-        const logitAt = (i) => (isF16 ? halfToFloat(raw[i]) : Number(raw[i]));
+        const raw = out[outName].data; // [1, n, 1] → 길이 n (float32)
         for (let i = 0; i < chunk.length; i++) {
-          const p = 1 / (1 + Math.exp(-logitAt(i + 1))); // BOS 오프셋
+          const p = 1 / (1 + Math.exp(-Number(raw[i + 1]))); // BOS 오프셋
           if (p > threshold) boundary[start + i] = true;
         }
       }
