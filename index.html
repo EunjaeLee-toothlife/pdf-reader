@@ -455,8 +455,11 @@
         const n = seq.length;
         const feeds = {};
         const i64 = (arr) => new ort.Tensor("int64", BigInt64Array.from(arr, (x) => BigInt(x)), [1, n]);
-        // 이 fp16 모델은 attention_mask를 float16으로 받음 (1.0=0x3C00, 0.0=0x0000)
-        const f16 = (arr) => new ort.Tensor("float16", Uint16Array.from(arr, (x) => (x ? 0x3c00 : 0x0000)), [1, n]);
+        // 이 fp16 모델은 attention_mask를 float16으로 받음.
+        // ort 최신판은 native Float16Array 요구, 구판은 Uint16Array(half 비트) 사용.
+        const f16 = (arr) => typeof Float16Array !== "undefined"
+          ? new ort.Tensor("float16", Float16Array.from(arr, (x) => x), [1, n])
+          : new ort.Tensor("float16", Uint16Array.from(arr, (x) => (x ? 0x3c00 : 0x0000)), [1, n]);
         if (inNames.includes("input_ids")) feeds.input_ids = i64(seq);             // ids는 int64 (vocab>2048라 fp16 불가)
         if (inNames.includes("attention_mask")) feeds.attention_mask = f16(seq.map(() => 1));
         if (inNames.includes("token_type_ids")) feeds.token_type_ids = i64(seq.map(() => 0));
