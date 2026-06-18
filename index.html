@@ -431,6 +431,13 @@
       catch (e) { aiState.promise = null; throw e; } // 실패 시 재시도 가능
     }
 
+    function halfToFloat(h) {
+      const s = (h & 0x8000) >> 15, e = (h & 0x7c00) >> 10, f = h & 0x03ff;
+      if (e === 0) return (s ? -1 : 1) * Math.pow(2, -14) * (f / 1024);
+      if (e === 0x1f) return f ? NaN : (s ? -Infinity : Infinity);
+      return (s ? -1 : 1) * Math.pow(2, e - 15) * (1 + f / 1024);
+    }
+
     async function aiSegment(text, threshold = 0.25) {
       if (!text) return text;
       const enc = await aiState.tok(text, { add_special_tokens: false });
@@ -448,13 +455,17 @@
         const n = seq.length;
         const feeds = {};
         const i64 = (arr) => new ort.Tensor("int64", BigInt64Array.from(arr, (x) => BigInt(x)), [1, n]);
-        if (inNames.includes("input_ids")) feeds.input_ids = i64(seq);
-        if (inNames.includes("attention_mask")) feeds.attention_mask = i64(seq.map(() => 1));
+        // 이 fp16 모델은 attention_mask를 float16으로 받음 (1.0=0x3C00, 0.0=0x0000)
+        const f16 = (arr) => new ort.Tensor("float16", Uint16Array.from(arr, (x) => (x ? 0x3c00 : 0x0000)), [1, n]);
+        if (inNames.includes("input_ids")) feeds.input_ids = i64(seq);             // ids는 int64 (vocab>2048라 fp16 불가)
+        if (inNames.includes("attention_mask")) feeds.attention_mask = f16(seq.map(() => 1));
         if (inNames.includes("token_type_ids")) feeds.token_type_ids = i64(seq.map(() => 0));
         const out = await sess.run(feeds);
-        const logits = out[outName].data; // [1, n, 1] → 길이 n
+        const raw = out[outName].data; // [1, n, 1] → 길이 n (float16이면 Uint16Array)
+        const isF16 = raw instanceof Uint16Array;
+        const logitAt = (i) => (isF16 ? halfToFloat(raw[i]) : Number(raw[i]));
         for (let i = 0; i < chunk.length; i++) {
-          const p = 1 / (1 + Math.exp(-Number(logits[i + 1]))); // BOS 오프셋
+          const p = 1 / (1 + Math.exp(-logitAt(i + 1))); // BOS 오프셋
           if (p > threshold) boundary[start + i] = true;
         }
       }
