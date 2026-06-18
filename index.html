@@ -146,6 +146,19 @@
       border: 1px solid var(--border); border-radius: 10px;
       padding: 12px; font-size: 14px;
     }
+    /* 토글 스위치 */
+    .switch { position: relative; display: inline-block; width: 48px; height: 28px; flex: 0 0 auto; }
+    .switch input { display: none; }
+    .switch .slider {
+      position: absolute; inset: 0; background: var(--border);
+      border-radius: 999px; transition: background .2s; cursor: pointer;
+    }
+    .switch .slider::before {
+      content: ""; position: absolute; height: 22px; width: 22px; left: 3px; top: 3px;
+      background: #fff; border-radius: 50%; transition: transform .2s;
+    }
+    .switch input:checked + .slider { background: var(--accent); }
+    .switch input:checked + .slider::before { transform: translateX(20px); }
   </style>
 </head>
 <body>
@@ -199,6 +212,19 @@
       <label>TTS 음성 엔진</label>
       <select id="voice"></select>
     </div>
+    <div class="field">
+      <label>문장 다듬기</label>
+      <div class="row" style="justify-content:space-between">
+        <span style="font-size:14px">AI 문장 분할 <span style="color:var(--muted);font-size:12px">(실험적 · 최초 1회 ~215MB)</span></span>
+        <label class="switch">
+          <input type="checkbox" id="aiToggle" />
+          <span class="slider"></span>
+        </label>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin:8px 0 0;line-height:1.5">
+        켜면 onnxruntime-web로 문장 경계를 모델이 잡아 낭독이 자연스러워진다. 데스크톱 Chrome 권장. 미지원/실패 시 규칙 기반으로 자동 폴백.
+      </p>
+    </div>
   </div>
 
   <script type="module">
@@ -220,6 +246,7 @@
     let rendering = false;
     let pendingPage = null;
     let currentText = "";
+    let baseText = "";          // 규칙 기반 정리 결과 (AI 폴백용 원본)
     const SCALE = 2; // 모바일 고해상도
 
     // PDF 추출 텍스트를 TTS 낭독용으로 규칙 기반 정리 (모델 없음, 결정적)
@@ -294,7 +321,8 @@
 
       const tc = await page.getTextContent();
       const raw = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")).join("");
-      currentText = cleanForTTS(raw);
+      baseText = cleanForTTS(raw);
+      currentText = baseText;
 
       pageinfo.textContent = `${num} / ${pdfDoc.numPages}`;
       $("prev").disabled = num <= 1;
@@ -302,7 +330,9 @@
       playpause.disabled = !currentText;
 
       rendering = false;
-      if (pendingPage !== null) { const p = pendingPage; pendingPage = null; renderPage(p); }
+      if (pendingPage !== null) { const p = pendingPage; pendingPage = null; renderPage(p); return; }
+
+      if (useAI) applyAI(num); // 비동기 — 캔버스 렌더 막지 않음
     }
 
     // ---- Web Speech API ----
@@ -355,6 +385,113 @@
     }
     function stopSpeak() { synth.cancel(); setState("idle"); }
 
+    // ---- AI 문장 분할 (wtpsplit sat-3l-sm int8 ONNX, opt-in) ----
+    let useAI = localStorage.getItem("useAI") === "1";
+    const SAT_URL = "https://huggingface.co/ModelCloud/sat-3l-sm-int8-onnx/resolve/main/model.onnx";
+    const aiState = { ready: false, promise: null, tok: null, sess: null, ort: null };
+
+    async function fetchModelCached(url) {
+      // 215MB 1회만 받고 Cache API에 보관
+      try {
+        const cache = await caches.open("sat-model-v1");
+        let res = await cache.match(url);
+        if (!res) {
+          res = await fetch(url);
+          if (!res.ok) throw new Error("model fetch " + res.status);
+          await cache.put(url, res.clone());
+        }
+        return await res.arrayBuffer();
+      } catch (e) {
+        const r = await fetch(url);
+        if (!r.ok) throw new Error("model fetch " + r.status);
+        return await r.arrayBuffer();
+      }
+    }
+
+    async function ensureAI() {
+      if (aiState.ready) return;
+      if (aiState.promise) return aiState.promise;
+      aiState.promise = (async () => {
+        setStatus("AI 모델 로딩… 최초 1회 ~215MB", true);
+        const tfjs = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3");
+        tfjs.env.allowLocalModels = false;
+        aiState.tok = await tfjs.AutoTokenizer.from_pretrained("Xenova/xlm-roberta-base");
+
+        const ortMod = await import("https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.wasm.min.mjs");
+        const ort = ortMod.InferenceSession ? ortMod : ortMod.default;
+        ort.env.wasm.wasmPaths = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/";
+        ort.env.wasm.numThreads = 1; // GitHub Pages = COOP/COEP 없음 → 단일 스레드 필수
+
+        const buf = await fetchModelCached(SAT_URL);
+        aiState.sess = await ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
+        aiState.ort = ort;
+        aiState.ready = true;
+      })();
+      try { await aiState.promise; }
+      catch (e) { aiState.promise = null; throw e; } // 실패 시 재시도 가능
+    }
+
+    async function aiSegment(text, threshold = 0.25) {
+      if (!text) return text;
+      const enc = await aiState.tok(text, { add_special_tokens: false });
+      const ids = Array.from(enc.input_ids.data, (x) => Number(x));
+      if (!ids.length) return text;
+
+      const ort = aiState.ort, sess = aiState.sess;
+      const inNames = sess.inputNames, outName = sess.outputNames[0];
+      const BOS = 0, EOS = 2, BLOCK = 510;
+      const boundary = new Array(ids.length).fill(false);
+
+      for (let start = 0; start < ids.length; start += BLOCK) {
+        const chunk = ids.slice(start, start + BLOCK);
+        const seq = [BOS, ...chunk, EOS];
+        const n = seq.length;
+        const feeds = {};
+        const i64 = (arr) => new ort.Tensor("int64", BigInt64Array.from(arr, (x) => BigInt(x)), [1, n]);
+        if (inNames.includes("input_ids")) feeds.input_ids = i64(seq);
+        if (inNames.includes("attention_mask")) feeds.attention_mask = i64(seq.map(() => 1));
+        if (inNames.includes("token_type_ids")) feeds.token_type_ids = i64(seq.map(() => 0));
+        const out = await sess.run(feeds);
+        const logits = out[outName].data; // [1, n, 1] → 길이 n
+        for (let i = 0; i < chunk.length; i++) {
+          const p = 1 / (1 + Math.exp(-Number(logits[i + 1]))); // BOS 오프셋
+          if (p > threshold) boundary[start + i] = true;
+        }
+      }
+
+      // 경계로 토큰 묶어 문장 단위 디코드
+      const segs = []; let cur = [];
+      for (let i = 0; i < ids.length; i++) { cur.push(ids[i]); if (boundary[i]) { segs.push(cur); cur = []; } }
+      if (cur.length) segs.push(cur);
+      const texts = [];
+      for (const s of segs) {
+        const t = (await aiState.tok.decode(s, { skip_special_tokens: true })).trim();
+        if (t) texts.push(t);
+      }
+      const result = texts.join("\n");
+      // 안전장치: 결과가 비었거나 경계가 하나도 없으면 폴백
+      if (!result || segs.length <= 1) return text;
+      return result;
+    }
+
+    async function applyAI(forNum) {
+      try {
+        await ensureAI();
+        setStatus("AI 문장 분할 중…", true);
+        const seg = await aiSegment(baseText);
+        if (forNum === undefined || forNum === pageNum) {
+          currentText = seg;
+          playpause.disabled = !currentText;
+        }
+        setStatus("AI 분할 적용됨");
+      } catch (e) {
+        console.error("[AI]", e);
+        currentText = baseText; // 폴백
+        playpause.disabled = !currentText;
+        setStatus("AI 분할 불가 — 규칙 기반 사용");
+      }
+    }
+
     // ---- 설정 시트 ----
     function openSheet() { $("scrim").classList.add("show"); $("sheet").classList.add("show"); }
     function closeSheet() { $("scrim").classList.remove("show"); $("sheet").classList.remove("show"); }
@@ -374,6 +511,17 @@
     $("rate").addEventListener("input", (e) => {
       $("rateval").textContent = parseFloat(e.target.value).toFixed(1) + "x";
       if (state !== "idle") { stopSpeak(); startSpeak(); } // 속도 즉시 반영
+    });
+
+    const aiToggle = $("aiToggle");
+    aiToggle.checked = useAI;
+    aiToggle.addEventListener("change", async () => {
+      useAI = aiToggle.checked;
+      localStorage.setItem("useAI", useAI ? "1" : "0");
+      if (!pdfDoc) return;
+      stopSpeak();
+      if (useAI) { await applyAI(pageNum); }
+      else { currentText = baseText; playpause.disabled = !currentText; setStatus("규칙 기반 사용"); }
     });
   </script>
 </body>
