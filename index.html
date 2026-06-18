@@ -2,8 +2,8 @@
 <html lang="ko">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF 리더 — 보고 읽어주는 페이지</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <title>PDF 리더</title>
   <style>
     :root {
       --bg: #1a1a1e;
@@ -13,8 +13,12 @@
       --muted: #9a9aa2;
       --accent: #6c8cff;
       --accent-2: #4caf7d;
+      --danger: #e0574d;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
     }
-    * { box-sizing: border-box; }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { height: 100%; }
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -22,114 +26,180 @@
       color: var(--fg);
       display: flex;
       flex-direction: column;
-      height: 100vh;
+      height: 100dvh;
       overflow: hidden;
+      user-select: none;
     }
+
+    /* ---- 상단 바 ---- */
     header {
-      padding: 12px 16px;
       background: var(--panel);
       border-bottom: 1px solid var(--border);
+      padding: calc(10px + var(--safe-top)) 12px 10px;
       display: flex;
+      flex-direction: column;
       gap: 10px;
-      align-items: center;
-      flex-wrap: wrap;
     }
-    header h1 {
-      font-size: 15px;
-      margin: 0 12px 0 0;
-      font-weight: 600;
-      white-space: nowrap;
-    }
-    button, select, label.file {
-      background: var(--border);
-      color: var(--fg);
-      border: none;
-      border-radius: 6px;
-      padding: 7px 12px;
-      font-size: 13px;
-      cursor: pointer;
-      transition: background .15s;
-    }
-    button:hover:not(:disabled), label.file:hover { background: #4a4a54; }
-    button:disabled { opacity: .4; cursor: not-allowed; }
-    button.primary { background: var(--accent); color: #fff; }
-    button.primary:hover:not(:disabled) { background: #5a7cf5; }
-    button.speak { background: var(--accent-2); color: #fff; }
-    button.speak:hover:not(:disabled) { background: #3f9a6c; }
-    label.file input { display: none; }
-    .pageinfo { font-size: 13px; color: var(--muted); min-width: 70px; text-align: center; }
+    .toprow { display: flex; align-items: center; gap: 10px; }
+    .title { font-size: 16px; font-weight: 700; }
     .spacer { flex: 1; }
+    .icon-btn {
+      width: 40px; height: 40px;
+      display: grid; place-items: center;
+      background: var(--border); color: var(--fg);
+      border: none; border-radius: 10px;
+      font-size: 18px; cursor: pointer;
+    }
+    .icon-btn:active { background: #4a4a54; }
+
+    label.file {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: var(--accent); color: #fff;
+      border-radius: 10px; padding: 9px 14px;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    label.file input { display: none; }
+
+    /* 페이지 네비 (파일 로드 후 노출) */
+    .nav { display: none; align-items: center; gap: 10px; }
+    .nav.show { display: flex; }
+    .nav button {
+      flex: 1; height: 42px;
+      background: var(--border); color: var(--fg);
+      border: none; border-radius: 10px;
+      font-size: 16px; cursor: pointer;
+    }
+    .nav button:active:not(:disabled) { background: #4a4a54; }
+    .nav button:disabled { opacity: .35; }
+    .pageinfo {
+      min-width: 76px; text-align: center;
+      font-size: 14px; color: var(--muted); font-variant-numeric: tabular-nums;
+    }
+
+    /* ---- 뷰어 ---- */
     main {
       flex: 1;
       overflow: auto;
+      -webkit-overflow-scrolling: touch;
       display: flex;
       justify-content: center;
       align-items: flex-start;
-      padding: 20px;
+      padding: 14px;
     }
-    #canvas-wrap {
-      position: relative;
-      box-shadow: 0 4px 24px rgba(0,0,0,.5);
-      line-height: 0;
-    }
-    canvas { display: block; }
-    /* 텍스트 레이어 — 읽는 중인 문장 하이라이트용 */
-    #text-layer {
-      position: absolute;
-      inset: 0;
-      overflow: hidden;
-      line-height: 1;
-      opacity: 0.25;
-    }
-    #text-layer span {
-      position: absolute;
-      color: transparent;
-      white-space: pre;
-      transform-origin: 0 0;
-    }
+    #canvas-wrap { position: relative; box-shadow: 0 4px 24px rgba(0,0,0,.5); line-height: 0; max-width: 100%; }
+    canvas { display: block; max-width: 100%; height: auto; }
     .placeholder {
-      color: var(--muted);
-      font-size: 14px;
-      text-align: center;
-      margin-top: 80px;
-      line-height: 1.7;
+      color: var(--muted); font-size: 14px; text-align: center;
+      margin-top: 60px; line-height: 1.8; padding: 0 24px;
     }
-    .rate { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-    .rate input { width: 90px; }
-    .status { font-size: 12px; color: var(--muted); }
+
+    /* ---- 하단 재생 컨트롤 ---- */
+    footer {
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 12px 16px calc(12px + var(--safe-bottom));
+      display: flex; gap: 12px;
+    }
+    footer button {
+      flex: 1; height: 54px;
+      border: none; border-radius: 14px;
+      font-size: 16px; font-weight: 700; color: #fff;
+      cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    footer button:disabled { opacity: .35; }
+    #playpause { background: var(--accent-2); }
+    #playpause:active:not(:disabled) { filter: brightness(1.1); }
+    #stopbtn { background: var(--danger); flex: 0 0 84px; }
+    #stopbtn:active:not(:disabled) { filter: brightness(1.1); }
+
+    .status {
+      position: fixed; left: 50%; transform: translateX(-50%);
+      bottom: calc(90px + var(--safe-bottom));
+      background: rgba(0,0,0,.8); color: #fff;
+      font-size: 13px; padding: 8px 14px; border-radius: 999px;
+      pointer-events: none; opacity: 0; transition: opacity .2s; max-width: 90vw; text-align: center;
+    }
+    .status.show { opacity: 1; }
+
+    /* ---- 설정 바텀시트 ---- */
+    .scrim {
+      position: fixed; inset: 0; background: rgba(0,0,0,.5);
+      opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 10;
+    }
+    .scrim.show { opacity: 1; pointer-events: auto; }
+    .sheet {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 11;
+      background: var(--panel); border-top-left-radius: 18px; border-top-right-radius: 18px;
+      padding: 8px 20px calc(24px + var(--safe-bottom));
+      transform: translateY(110%); transition: transform .28s cubic-bezier(.3,.7,.3,1);
+    }
+    .sheet.show { transform: translateY(0); }
+    .grabber { width: 40px; height: 4px; background: var(--border); border-radius: 2px; margin: 8px auto 16px; }
+    .sheet h2 { font-size: 16px; margin: 0 0 18px; }
+    .field { margin-bottom: 22px; }
+    .field label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+    .field .row { display: flex; align-items: center; gap: 12px; }
+    .field input[type=range] { flex: 1; accent-color: var(--accent); height: 28px; }
+    .field .val { font-size: 14px; min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+    .field select {
+      width: 100%; background: var(--border); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 10px;
+      padding: 12px; font-size: 14px;
+    }
   </style>
 </head>
 <body>
   <header>
-    <h1>📖 PDF 리더</h1>
-    <label class="file">
-      PDF 열기
-      <input type="file" id="file" accept="application/pdf" />
-    </label>
-    <button id="prev" disabled>◀ 이전</button>
-    <span class="pageinfo" id="pageinfo">- / -</span>
-    <button id="next" disabled>다음 ▶</button>
-    <button class="speak" id="speak" disabled>🔊 읽기</button>
-    <button id="stop" disabled>⏹ 정지</button>
-    <div class="rate">
-      속도
-      <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1" />
-      <span id="rateval">1.0x</span>
+    <div class="toprow">
+      <span class="title">📖 PDF 리더</span>
+      <div class="spacer"></div>
+      <label class="file">
+        📁 열기
+        <input type="file" id="file" accept="application/pdf" />
+      </label>
+      <button class="icon-btn" id="openSettings" title="설정">⚙️</button>
     </div>
-    <select id="voice" title="음성 선택"></select>
-    <div class="spacer"></div>
-    <span class="status" id="status"></span>
+    <div class="nav" id="nav">
+      <button id="prev">◀</button>
+      <span class="pageinfo" id="pageinfo">- / -</span>
+      <button id="next">▶</button>
+    </div>
   </header>
+
   <main>
     <div id="canvas-wrap" style="display:none">
       <canvas id="canvas"></canvas>
-      <div id="text-layer"></div>
     </div>
     <div class="placeholder" id="placeholder">
-      상단의 <b>PDF 열기</b>로 파일을 선택해줘.<br />
-      페이지가 보이면 <b>🔊 읽기</b>로 현재 페이지 텍스트를 음성으로 들을 수 있다.
+      상단 <b>📁 열기</b>로 PDF를 선택해줘.<br />
+      페이지를 넘기며 하단 버튼으로 음성 재생할 수 있다.
     </div>
   </main>
+
+  <footer>
+    <button id="playpause" disabled>▶ 재생</button>
+    <button id="stopbtn" disabled>⏹</button>
+  </footer>
+
+  <div class="status" id="status"></div>
+
+  <!-- 설정 바텀시트 -->
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet" id="sheet">
+    <div class="grabber"></div>
+    <h2>설정</h2>
+    <div class="field">
+      <label>읽기 속도</label>
+      <div class="row">
+        <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1" />
+        <span class="val" id="rateval">1.0x</span>
+      </div>
+    </div>
+    <div class="field">
+      <label>TTS 음성 엔진</label>
+      <select id="voice"></select>
+    </div>
+  </div>
 
   <script type="module">
     import * as pdfjsLib from "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.min.mjs";
@@ -137,36 +207,44 @@
       "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.7.76/build/pdf.worker.min.mjs";
 
     const $ = (id) => document.getElementById(id);
-    const fileInput = $("file");
     const canvas = $("canvas");
     const ctx = canvas.getContext("2d");
-    const textLayer = $("text-layer");
     const wrap = $("canvas-wrap");
     const placeholder = $("placeholder");
     const pageinfo = $("pageinfo");
-    const statusEl = $("status");
+    const playpause = $("playpause");
+    const stopbtn = $("stopbtn");
 
     let pdfDoc = null;
     let pageNum = 1;
     let rendering = false;
     let pendingPage = null;
     let currentText = "";
-    const SCALE = 1.5;
+    const SCALE = 2; // 모바일 고해상도
 
-    function setStatus(msg) { statusEl.textContent = msg || ""; }
+    let statusTimer = null;
+    function setStatus(msg, sticky) {
+      const el = $("status");
+      clearTimeout(statusTimer);
+      if (!msg) { el.classList.remove("show"); return; }
+      el.textContent = msg;
+      el.classList.add("show");
+      if (!sticky) statusTimer = setTimeout(() => el.classList.remove("show"), 2200);
+    }
 
     async function loadPDF(data) {
       stopSpeak();
-      setStatus("로딩 중…");
+      setStatus("로딩 중…", true);
       try {
         pdfDoc = await pdfjsLib.getDocument({ data }).promise;
         pageNum = 1;
         wrap.style.display = "block";
         placeholder.style.display = "none";
+        $("nav").classList.add("show");
         await renderPage(pageNum);
         setStatus(`${pdfDoc.numPages}쪽 문서`);
       } catch (e) {
-        setStatus("로드 실패: " + e.message);
+        setStatus("로드 실패: " + e.message, true);
         console.error(e);
       }
     }
@@ -176,63 +254,33 @@
       rendering = true;
       const page = await pdfDoc.getPage(num);
       const viewport = page.getViewport({ scale: SCALE });
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = viewport.width * dpr;
-      canvas.height = viewport.height * dpr;
-      canvas.style.width = viewport.width + "px";
-      canvas.style.height = viewport.height + "px";
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
       await page.render({ canvasContext: ctx, viewport }).promise;
-      await buildTextLayer(page, viewport);
+
+      const tc = await page.getTextContent();
+      currentText = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")).join("").replace(/\n{2,}/g, "\n").trim();
 
       pageinfo.textContent = `${num} / ${pdfDoc.numPages}`;
       $("prev").disabled = num <= 1;
       $("next").disabled = num >= pdfDoc.numPages;
-      $("speak").disabled = !currentText.trim();
+      playpause.disabled = !currentText;
 
       rendering = false;
-      if (pendingPage !== null) {
-        const p = pendingPage; pendingPage = null;
-        renderPage(p);
-      }
-    }
-
-    // 텍스트 추출 + 위치 오버레이(하이라이트/추출 동시 해결)
-    async function buildTextLayer(page, viewport) {
-      const tc = await page.getTextContent();
-      textLayer.innerHTML = "";
-      textLayer.style.width = viewport.width + "px";
-      textLayer.style.height = viewport.height + "px";
-
-      const parts = [];
-      for (const item of tc.items) {
-        if (!item.str) continue;
-        parts.push(item.str + (item.hasEOL ? "\n" : ""));
-        const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-        const span = document.createElement("span");
-        span.textContent = item.str;
-        const fontSize = Math.hypot(tx[2], tx[3]);
-        span.style.left = tx[4] + "px";
-        span.style.top = (tx[5] - fontSize) + "px";
-        span.style.fontSize = fontSize + "px";
-        textLayer.appendChild(span);
-      }
-      currentText = parts.join("").replace(/\n{2,}/g, "\n").trim();
+      if (pendingPage !== null) { const p = pendingPage; pendingPage = null; renderPage(p); }
     }
 
     // ---- Web Speech API ----
     const synth = window.speechSynthesis;
     let voices = [];
+    let state = "idle"; // idle | playing | paused
 
     function loadVoices() {
       voices = synth.getVoices();
       const sel = $("voice");
       const prev = sel.value;
       sel.innerHTML = "";
-      // 한국어 음성 우선 정렬
-      voices
-        .slice()
+      voices.slice()
         .sort((a, b) => (b.lang.startsWith("ko") - a.lang.startsWith("ko")))
         .forEach((v) => {
           const opt = document.createElement("option");
@@ -245,38 +293,52 @@
     loadVoices();
     if (synth.onvoiceschanged !== undefined) synth.onvoiceschanged = loadVoices;
 
-    function speak() {
-      if (!currentText.trim()) { setStatus("이 페이지에서 추출된 텍스트가 없다 (스캔본일 수 있음)"); return; }
+    function setState(s) {
+      state = s;
+      if (s === "playing") { playpause.innerHTML = "⏸ 일시정지"; stopbtn.disabled = false; }
+      else if (s === "paused") { playpause.innerHTML = "▶ 이어듣기"; stopbtn.disabled = false; }
+      else { playpause.innerHTML = "▶ 재생"; stopbtn.disabled = true; }
+    }
+
+    function startSpeak() {
+      if (!currentText) { setStatus("추출된 텍스트 없음 (스캔본일 수 있음)"); return; }
       synth.cancel();
       const u = new SpeechSynthesisUtterance(currentText);
       const chosen = voices.find((v) => v.name === $("voice").value);
-      if (chosen) { u.voice = chosen; u.lang = chosen.lang; }
-      else u.lang = "ko-KR";
+      if (chosen) { u.voice = chosen; u.lang = chosen.lang; } else u.lang = "ko-KR";
       u.rate = parseFloat($("rate").value);
-      u.onstart = () => { setStatus("읽는 중…"); $("stop").disabled = false; };
-      u.onend = () => { setStatus(""); $("stop").disabled = true; };
-      u.onerror = (e) => { setStatus("음성 오류: " + e.error); $("stop").disabled = true; };
+      u.onstart = () => setState("playing");
+      u.onend = () => setState("idle");
+      u.onerror = (e) => { if (e.error !== "canceled" && e.error !== "interrupted") setStatus("음성 오류: " + e.error); setState("idle"); };
       synth.speak(u);
     }
-    function stopSpeak() { synth.cancel(); setStatus(""); $("stop").disabled = true; }
+
+    function togglePlay() {
+      if (state === "idle") startSpeak();
+      else if (state === "playing") { synth.pause(); setState("paused"); }
+      else if (state === "paused") { synth.resume(); setState("playing"); }
+    }
+    function stopSpeak() { synth.cancel(); setState("idle"); }
+
+    // ---- 설정 시트 ----
+    function openSheet() { $("scrim").classList.add("show"); $("sheet").classList.add("show"); }
+    function closeSheet() { $("scrim").classList.remove("show"); $("sheet").classList.remove("show"); }
 
     // ---- 이벤트 ----
-    fileInput.addEventListener("change", async (e) => {
+    $("file").addEventListener("change", async (e) => {
       const f = e.target.files[0];
       if (!f) return;
-      const buf = await f.arrayBuffer();
-      loadPDF(new Uint8Array(buf));
+      loadPDF(new Uint8Array(await f.arrayBuffer()));
     });
     $("prev").addEventListener("click", () => { if (pageNum > 1) { stopSpeak(); renderPage(--pageNum); } });
-    $("next").addEventListener("click", () => { if (pageNum < pdfDoc.numPages) { stopSpeak(); renderPage(++pageNum); } });
-    $("speak").addEventListener("click", speak);
-    $("stop").addEventListener("click", stopSpeak);
-    $("rate").addEventListener("input", (e) => { $("rateval").textContent = parseFloat(e.target.value).toFixed(1) + "x"; });
-
-    document.addEventListener("keydown", (e) => {
-      if (!pdfDoc) return;
-      if (e.key === "ArrowLeft") $("prev").click();
-      if (e.key === "ArrowRight") $("next").click();
+    $("next").addEventListener("click", () => { if (pdfDoc && pageNum < pdfDoc.numPages) { stopSpeak(); renderPage(++pageNum); } });
+    playpause.addEventListener("click", togglePlay);
+    stopbtn.addEventListener("click", stopSpeak);
+    $("openSettings").addEventListener("click", openSheet);
+    $("scrim").addEventListener("click", closeSheet);
+    $("rate").addEventListener("input", (e) => {
+      $("rateval").textContent = parseFloat(e.target.value).toFixed(1) + "x";
+      if (state !== "idle") { stopSpeak(); startSpeak(); } // 속도 즉시 반영
     });
   </script>
 </body>
