@@ -222,6 +222,40 @@
     let currentText = "";
     const SCALE = 2; // 모바일 고해상도
 
+    // PDF 추출 텍스트를 TTS 낭독용으로 규칙 기반 정리 (모델 없음, 결정적)
+    function cleanForTTS(raw) {
+      // 1) 줄 단위 공백 정규화 + 노이즈 줄 제거
+      const lines = raw.split("\n").map((l) => l.replace(/[ \t ]+/g, " ").trim());
+      const kept = lines.filter((l) => {
+        if (l === "") return true;                                  // 단락 경계 보존
+        if (/^[-–—\s]*\d{1,4}[-–—\s]*$/.test(l)) return false;      // 페이지번호만 있는 줄
+        if (/^(page|페이지)\s*\d+\s*$/i.test(l)) return false;       // "page 12" / "페이지 12"
+        return true;
+      });
+
+      // 2) 빈 줄로 단락 분리
+      const paras = [];
+      let cur = [];
+      for (const l of kept) {
+        if (l === "") { if (cur.length) { paras.push(cur); cur = []; } }
+        else cur.push(l);
+      }
+      if (cur.length) paras.push(cur);
+
+      // 3) 단락 내 줄 결합: 라틴 하이픈은 붙이고, 그 외 소프트 줄바꿈은 공백으로
+      const out = paras.map((arr) => {
+        let s = arr[0] || "";
+        for (let i = 1; i < arr.length; i++) {
+          if (/[A-Za-z]-$/.test(s)) s = s.slice(0, -1) + arr[i];   // infor- mation → information
+          else s += " " + arr[i];
+        }
+        return s.replace(/ {2,}/g, " ").trim();
+      });
+
+      // 4) 단락 사이는 줄바꿈(낭독 시 짧은 쉼)
+      return out.join("\n").trim();
+    }
+
     let statusTimer = null;
     function setStatus(msg, sticky) {
       const el = $("status");
@@ -259,7 +293,8 @@
       await page.render({ canvasContext: ctx, viewport }).promise;
 
       const tc = await page.getTextContent();
-      currentText = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")).join("").replace(/\n{2,}/g, "\n").trim();
+      const raw = tc.items.map((i) => i.str + (i.hasEOL ? "\n" : "")).join("");
+      currentText = cleanForTTS(raw);
 
       pageinfo.textContent = `${num} / ${pdfDoc.numPages}`;
       $("prev").disabled = num <= 1;
